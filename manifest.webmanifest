@@ -1,7 +1,7 @@
 {
-  "name": "Budget Ledger",
-  "short_name": "Budget",
-  "description": "Personal income & expense tracker",
+  "name": "Keewx",
+  "short_name": "Keewx",
+  "description": "Personal income & expense tracker by Keewx",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

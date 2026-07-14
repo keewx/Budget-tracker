@@ -1,4 +1,4 @@
-const CACHE = "budget-ledger-v1";
+const CACHE = "keewx-v1";
 const ASSETS = ["./", "./index.html", "./manifest.webmanifest", "./icons/icon-192.png", "./icons/icon-512.png"];
 
 self.addEventListener("install", (e) => {
