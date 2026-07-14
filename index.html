@@ -35,6 +35,22 @@
 <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js" crossorigin></script>
+
+<!-- Firebase (Auth + Firestore) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyBFN7Zt8pBAN8LO1LoRc37GO1_Z1GcyW7A",
+    authDomain: "keewx-ce0d3.firebaseapp.com",
+    projectId: "keewx-ce0d3",
+    storageBucket: "keewx-ce0d3.firebasestorage.app",
+    messagingSenderId: "508970059032",
+    appId: "1:508970059032:web:45ccd271713c32d3c8ca6d",
+  };
+  firebase.initializeApp(firebaseConfig);
+</script>
 </head>
 <body>
 <div id="root"></div>
@@ -42,14 +58,21 @@
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useCallback, useMemo } = React;
 
-/* ---------- local storage (replaces the Claude-artifact window.storage API) ---------- */
+/* ---------- cloud storage (Firestore, scoped to the signed-in user) ---------- */
+const db = firebase.firestore();
 window.storage = {
   get: async (key) => {
-    const v = localStorage.getItem(key);
-    return v === null ? null : { key, value: v };
+    const user = firebase.auth().currentUser;
+    if (!user) return null;
+    const snap = await db.collection("budgetData").doc(user.uid).get();
+    if (!snap.exists) return null;
+    return { key, value: JSON.stringify(snap.data() || {}) };
   },
   set: async (key, value) => {
-    localStorage.setItem(key, value);
+    const user = firebase.auth().currentUser;
+    if (!user) return null;
+    const data = JSON.parse(value);
+    await db.collection("budgetData").doc(user.uid).set(data);
     return { key, value };
   },
 };
@@ -65,6 +88,7 @@ const Plus = (p) => <Icon {...p}><line x1="12" y1="5" x2="12" y2="19" /><line x1
 const X = (p) => <Icon {...p}><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></Icon>;
 const Search = (p) => <Icon {...p}><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></Icon>;
 const Pencil = (p) => <Icon {...p}><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /></Icon>;
+const LogOut = (p) => <Icon {...p}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></Icon>;
 const ChevronLeft = (p) => <Icon {...p}><polyline points="15 18 9 12 15 6" /></Icon>;
 const ChevronRight = (p) => <Icon {...p}><polyline points="9 18 15 12 9 6" /></Icon>;
 const TrendingUp = (p) => <Icon {...p}><polyline points="22 7 13.5 15.5 8.5 10.5 2 17" /><polyline points="16 7 22 7 22 13" /></Icon>;
@@ -200,7 +224,7 @@ const DEFAULT_CATEGORIES = {
 };
 const STORAGE_KEY = "budget-tracker-state";
 
-function BudgetTracker() {
+function BudgetTracker({ userEmail }) {
   const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
   const [transactions, setTransactions] = useState([]);
   const [activeMonth, setActiveMonth] = useState(new Date());
@@ -357,10 +381,14 @@ function BudgetTracker() {
       <div style={styles.container} className="app-shell">
         <header style={styles.header}>
           <div>
-            <div style={styles.eyebrow}>Keewx</div>
+            <div style={styles.eyebrow}>Keewx{userEmail ? ` · ${userEmail}` : ""}</div>
             <h1 style={styles.title}>Budget Ledger</h1>
           </div>
-          <div style={{ ...styles.iconWrap, background: "#B08D5722", color: "#B08D57" }}><Wallet size={18} /></div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={{ ...styles.iconWrap, background: "#B08D5722", color: "#B08D57", border: "none", cursor: "pointer" }} onClick={() => firebase.auth().signOut()} aria-label="Log out">
+              <LogOut size={16} />
+            </button>
+          </div>
         </header>
 
         <div className="layout-grid">
@@ -601,7 +629,86 @@ const styles = {
   addConfirm: { background: "#B08D57", border: "none", borderRadius: 8, color: "#12141A", fontWeight: 600, fontSize: 13, padding: "0 14px", cursor: "pointer" },
 };
 
-ReactDOM.createRoot(document.getElementById("root")).render(<BudgetTracker />);
+function AuthGate() {
+  const [status, setStatus] = useState("loading"); // loading | signedOut | signedIn
+  const [user, setUser] = useState(null);
+  const [mode, setMode] = useState("signin"); // signin | signup
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const unsub = firebase.auth().onAuthStateChanged((u) => {
+      setUser(u);
+      setStatus(u ? "signedIn" : "signedOut");
+    });
+    return unsub;
+  }, []);
+
+  const friendlyError = (code) => {
+    switch (code) {
+      case "auth/email-already-in-use": return "That email already has an account — try signing in instead.";
+      case "auth/invalid-email": return "That doesn't look like a valid email address.";
+      case "auth/weak-password": return "Password should be at least 6 characters.";
+      case "auth/wrong-password": case "auth/invalid-credential": case "auth/invalid-login-credentials": return "Incorrect email or password.";
+      case "auth/user-not-found": return "No account found with that email.";
+      case "auth/too-many-requests": return "Too many attempts — please wait a moment and try again.";
+      default: return "Something went wrong. Please try again.";
+    }
+  };
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError("");
+    if (!email || !password) return;
+    setBusy(true);
+    try {
+      if (mode === "signup") {
+        await firebase.auth().createUserWithEmailAndPassword(email.trim(), password);
+      } else {
+        await firebase.auth().signInWithEmailAndPassword(email.trim(), password);
+      }
+    } catch (err) {
+      setError(friendlyError(err.code));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (status === "loading") {
+    return <div style={styles.page}><div style={{ color: "#8B8F99" }}>Loading…</div></div>;
+  }
+
+  if (status === "signedIn") {
+    return <BudgetTracker key={user.uid} userEmail={user.email} />;
+  }
+
+  return (
+    <div style={styles.page}>
+      <div style={{ width: "100%", maxWidth: 360 }}>
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <div style={styles.eyebrow}>Keewx</div>
+          <h1 style={styles.title}>Budget Ledger</h1>
+        </div>
+        <form style={styles.card} onSubmit={submit}>
+          <div style={styles.typeToggle}>
+            <button type="button" style={{ ...styles.typeBtn, background: mode === "signin" ? "#B08D5722" : "transparent", color: mode === "signin" ? "#B08D57" : "#8B8F99", borderColor: mode === "signin" ? "#B08D57" : "#3A3E48" }} onClick={() => { setMode("signin"); setError(""); }}>Sign in</button>
+            <button type="button" style={{ ...styles.typeBtn, background: mode === "signup" ? "#B08D5722" : "transparent", color: mode === "signup" ? "#B08D57" : "#8B8F99", borderColor: mode === "signup" ? "#B08D57" : "#3A3E48" }} onClick={() => { setMode("signup"); setError(""); }}>Create account</button>
+          </div>
+          <input style={styles.input} type="email" autoComplete="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          <input style={styles.input} type="password" autoComplete={mode === "signup" ? "new-password" : "current-password"} placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} />
+          {error && <div style={styles.errorBanner}>{error}</div>}
+          <button type="submit" style={styles.primaryBtn} disabled={busy}>
+            {busy ? "Please wait…" : mode === "signup" ? "Create account" : "Sign in"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<AuthGate />);
 </script>
 
 <script>
