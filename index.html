@@ -15,8 +15,19 @@
 
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
-  html, body { margin: 0; padding: 0; background: #12141A; }
+  html, body { margin: 0; padding: 0; background: #12141A; overflow-x: hidden; }
+  *, *::before, *::after { box-sizing: border-box; }
   input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(1); }
+
+  .app-shell { width: 100%; max-width: 480px; margin: 0 auto; }
+  .col-left, .col-right { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+  @media (min-width: 860px) {
+    .app-shell { max-width: 1020px; }
+    .layout-grid { display: grid; grid-template-columns: 380px 1fr; gap: 28px; align-items: start; }
+    .col-left { position: sticky; top: 32px; }
+    .txn-card { max-height: calc(100vh - 64px); overflow-y: auto; }
+  }
 </style>
 
 <!-- React (no build step needed) -->
@@ -85,8 +96,17 @@ function Donut({ data, size = 160 }) {
         acc += d.value;
         const end = (acc / total) * 360;
         const gap = data.length > 1 ? 1.5 : 0;
+        const a0 = start + gap / 2;
+        const a1 = end - gap / 2;
+        const span = a1 - a0;
+        // A single arc command can't draw a full 360° circle (start/end points coincide),
+        // so a 100%-share slice is split into two half-arcs instead.
+        const path =
+          span >= 359.9
+            ? `${arcPath(cx, cy, rOuter, rInner, a0, a0 + 180)} ${arcPath(cx, cy, rOuter, rInner, a0 + 180, a0 + 360)}`
+            : arcPath(cx, cy, rOuter, rInner, a0, a1);
         return (
-          <path key={i} d={arcPath(cx, cy, rOuter, rInner, start + gap / 2, end - gap / 2)}
+          <path key={i} d={path}
                 fill={d.color} stroke="#1B1E26" strokeWidth="2"
                 onMouseEnter={() => setHover(d)} onMouseLeave={() => setHover(null)}
                 style={{ cursor: "pointer" }} />
@@ -101,7 +121,60 @@ function Donut({ data, size = 160 }) {
   );
 }
 
-/* ---------- helpers ---------- */
+function Calendar({ month, dayTotals, selectedDay, onSelectDay }) {
+  const year = month.getFullYear();
+  const m = month.getMonth();
+  const daysInMonth = new Date(year, m + 1, 0).getDate();
+  const firstWeekday = new Date(year, m, 1).getDay(); // 0 = Sunday
+  const today = todayISO();
+  const weekdayLabels = ["S", "M", "T", "W", "T", "F", "S"];
+
+  const cells = [];
+  for (let i = 0; i < firstWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  return (
+    <div>
+      <div style={styles.calWeekRow}>
+        {weekdayLabels.map((w, i) => <div key={i} style={styles.calWeekLabel}>{w}</div>)}
+      </div>
+      <div style={styles.calGrid}>
+        {cells.map((d, i) => {
+          if (d === null) return <div key={i} />;
+          const dateStr = `${year}-${pad(m + 1)}-${pad(d)}`;
+          const totals = dayTotals[dateStr];
+          const isToday = dateStr === today;
+          const isSelected = dateStr === selectedDay;
+          const net = totals ? totals.income - totals.expense : 0;
+          return (
+            <button
+              key={i}
+              onClick={() => onSelectDay(isSelected ? null : dateStr)}
+              style={{
+                ...styles.calCell,
+                ...(isSelected ? styles.calCellSelected : {}),
+                ...(isToday && !isSelected ? styles.calCellToday : {}),
+              }}
+              title={totals ? `Income ${fmt(totals.income)} · Expense ${fmt(totals.expense)}` : "No activity"}
+            >
+              <span style={styles.calDayNum}>{d}</span>
+              {totals && (
+                <span
+                  style={{
+                    ...styles.calDot,
+                    background: net > 0 ? "#7FA98F" : net < 0 ? "#C97B5A" : "#8B8F99",
+                  }}
+                />
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
 const pad = (n) => String(n).padStart(2, "0");
 const monthKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
 const monthLabel = (d) => d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
@@ -138,8 +211,11 @@ function BudgetTracker() {
   const [editingId, setEditingId] = useState(null);
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState("date-desc");
+  const [selectedDay, setSelectedDay] = useState(null);
 
   const [form, setForm] = useState({ type: "expense", categoryId: "exp-food", amount: "", note: "", date: todayISO() });
+
+  useEffect(() => { setSelectedDay(null); }, [activeMonth]);
 
   useEffect(() => {
     (async () => {
@@ -172,11 +248,21 @@ function BudgetTracker() {
     return map;
   }, [monthTxns]);
 
+  const dayTotals = useMemo(() => {
+    const map = {};
+    monthTxns.forEach((t) => {
+      if (!map[t.date]) map[t.date] = { income: 0, expense: 0 };
+      map[t.date][t.type] += t.amount;
+    });
+    return map;
+  }, [monthTxns]);
+
   const findCategory = (id) => [...categories.income, ...categories.expense].find((c) => c.id === id) || { label: "Uncategorized", color: "#8B8F99" };
 
   const visibleTxns = useMemo(() => {
     const q = search.trim().toLowerCase();
     let list = monthTxns;
+    if (selectedDay) list = list.filter((t) => t.date === selectedDay);
     if (q) {
       list = list.filter((t) => {
         const cat = findCategory(t.categoryId);
@@ -193,7 +279,7 @@ function BudgetTracker() {
       }
     });
     return sorted;
-  }, [monthTxns, search, sortBy, categories]);
+  }, [monthTxns, search, sortBy, selectedDay, categories]);
 
   const resetForm = () => {
     setForm({ type: "expense", categoryId: categories.expense[0]?.id, amount: "", note: "", date: todayISO() });
@@ -267,7 +353,7 @@ function BudgetTracker() {
 
   return (
     <div style={styles.page}>
-      <div style={styles.container}>
+      <div style={styles.container} className="app-shell">
         <header style={styles.header}>
           <div>
             <div style={styles.eyebrow}>Money</div>
@@ -275,6 +361,9 @@ function BudgetTracker() {
           </div>
           <div style={{ ...styles.iconWrap, background: "#B08D5722", color: "#B08D57" }}><Wallet size={18} /></div>
         </header>
+
+        <div className="layout-grid">
+        <div className="col-left">
 
         <div style={styles.dateNav}>
           <button style={styles.navBtn} onClick={() => setActiveMonth((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))}><ChevronLeft size={18} /></button>
@@ -301,6 +390,18 @@ function BudgetTracker() {
             <div style={{ ...styles.summaryValue, color: net >= 0 ? "#7FA98F" : "#C97B5A" }}>{fmt(net)}</div>
           </div>
         </div>
+
+        <section style={styles.card}>
+          <div style={styles.cardHeaderRow}>
+            <h2 style={styles.cardTitle}>Calendar</h2>
+            {selectedDay && (
+              <button style={styles.dayFilterChip} onClick={() => setSelectedDay(null)}>
+                {selectedDay} <X size={11} />
+              </button>
+            )}
+          </div>
+          <Calendar month={activeMonth} dayTotals={dayTotals} selectedDay={selectedDay} onSelectDay={setSelectedDay} />
+        </section>
 
         <button style={styles.primaryBtn} onClick={startAdd}><Plus size={16} style={{ marginRight: 6 }} />Add transaction</button>
 
@@ -348,7 +449,11 @@ function BudgetTracker() {
           </section>
         )}
 
-        <section style={styles.card}>
+        </div>
+
+        <div className="col-right">
+
+        <section style={{ ...styles.card }} className="txn-card">
           <div style={styles.cardHeaderRow}><h2 style={styles.cardTitle}>Transactions</h2></div>
 
           <div style={styles.searchRow}>
@@ -374,7 +479,9 @@ function BudgetTracker() {
 
           <ul style={styles.txnList}>
             {visibleTxns.length === 0 && (
-              <li style={styles.emptyRow}>{search ? "No transactions match your search." : "No transactions this month yet."}</li>
+              <li style={styles.emptyRow}>
+                {search || selectedDay ? "No transactions match your filters." : "No transactions this month yet."}
+              </li>
             )}
             {visibleTxns.map((t) => {
               const cat = findCategory(t.categoryId);
@@ -424,6 +531,9 @@ function BudgetTracker() {
             </div>
           ))}
         </section>
+
+        </div>
+        </div>
       </div>
     </div>
   );
@@ -431,7 +541,7 @@ function BudgetTracker() {
 
 const styles = {
   page: { minHeight: "100vh", background: "#12141A", color: "#E8E6E1", fontFamily: "'IBM Plex Sans', -apple-system, sans-serif", display: "flex", justifyContent: "center", padding: "24px 16px 48px", boxSizing: "border-box" },
-  container: { width: "100%", maxWidth: 480 },
+  container: { width: "100%", boxSizing: "border-box" },
   header: { display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 20 },
   eyebrow: { fontSize: 11, letterSpacing: "0.14em", textTransform: "uppercase", color: "#8B8F99", marginBottom: 4 },
   title: { fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 28, margin: 0, color: "#F3F1EC" },
@@ -458,11 +568,19 @@ const styles = {
   legendDot: { width: 9, height: 9, borderRadius: "50%", minWidth: 9 },
   legendLabel: { fontSize: 13, flex: 1 },
   legendValue: { fontSize: 12, color: "#8B8F99" },
-  searchRow: { display: "flex", gap: 8, marginBottom: 2 },
-  searchBox: { flex: 1, display: "flex", alignItems: "center", gap: 6, background: "#12141A", border: "1px solid #3A3E48", borderRadius: 8, padding: "0 10px" },
-  searchInput: { flex: 1, background: "transparent", border: "none", outline: "none", color: "#E8E6E1", fontSize: 13, padding: "9px 0" },
-  searchClear: { background: "transparent", border: "none", color: "#5A5E68", cursor: "pointer", display: "flex", padding: 2 },
-  sortSelect: { background: "#12141A", border: "1px solid #3A3E48", borderRadius: 8, color: "#E8E6E1", fontSize: 12, padding: "0 8px", outline: "none" },
+  calWeekRow: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 4 },
+  calWeekLabel: { textAlign: "center", fontSize: 10, color: "#5A5E68", fontWeight: 600 },
+  calGrid: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4 },
+  calCell: { background: "transparent", border: "1px solid transparent", borderRadius: 8, padding: "6px 0 8px", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, cursor: "pointer", color: "#E8E6E1" },
+  calCellToday: { border: "1px solid #B08D5788" },
+  calCellSelected: { background: "#B08D5722", border: "1px solid #B08D57" },
+  calDayNum: { fontSize: 12 },
+  calDot: { width: 5, height: 5, borderRadius: "50%" },
+  dayFilterChip: { display: "inline-flex", alignItems: "center", gap: 6, background: "#B08D5722", color: "#B08D57", border: "1px solid #B08D5755", borderRadius: 20, padding: "3px 10px", fontSize: 12, cursor: "pointer" },
+  searchRow: { display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 2 },  searchBox: { flex: "1 1 160px", minWidth: 0, display: "flex", alignItems: "center", gap: 6, background: "#12141A", border: "1px solid #3A3E48", borderRadius: 8, padding: "0 10px", boxSizing: "border-box" },
+  searchInput: { flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none", color: "#E8E6E1", fontSize: 13, padding: "9px 0" },
+  searchClear: { background: "transparent", border: "none", color: "#5A5E68", cursor: "pointer", display: "flex", padding: 2, flexShrink: 0 },
+  sortSelect: { flex: "1 1 130px", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", background: "#12141A", border: "1px solid #3A3E48", borderRadius: 8, color: "#E8E6E1", fontSize: 12, padding: "9px 8px", outline: "none" },
   txnList: { listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 10 },
   emptyRow: { fontSize: 13, color: "#8B8F99" },
   txnRow: { display: "flex", alignItems: "flex-start", gap: 6, borderRadius: 8, padding: 4 },
